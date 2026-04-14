@@ -6,7 +6,7 @@ This script analyzes NEISS data to identify trends in emergency department visit
 script Key Features:
 1. scriptGround Truth Comparisonscript: Labels cases based on product codes (1927, 1931, 1932).
 2. scriptStatistical Word Analysisscript: Automatically identifies words that distinguish supplements from non-supplements.
-3. scriptFew-Shot Ollama Classificationscript: Uses the discovered words to guide a Llama model via Ollama for zero-manual-effort classification.
+3. scriptFew-Shot Ollama Classificationscript: Uses the discovered words to guide the MODEL_NAME via Ollama for zero-manual-effort classification.
 4. scriptMetric Validationscript: Calculates accuracy and recall targeting >80% recall.
 """
 
@@ -96,7 +96,7 @@ def analyze_word_frequencies(df):
 
 
 
-MODEL_NAME = "llama3.1:8b"
+MODEL_NAME = "gemma4:e4b"
 
 SYSTEM_MSG = """
 You are a strict binary classifier for emergency department (ED) narratives.
@@ -105,47 +105,48 @@ OUTPUT FORMAT (must be valid JSON on a single line):
 {"reason": "short reason", "label": 0 or 1}
 
 TASK:
-Classify whether the narrative involves exposure/ingestion/overdose/adverse reaction to a VITAMIN or DIETARY SUPPLEMENT.
+Classify whether the narrative involves exposure/ingestion/overdose/adverse reaction to a STRICTLY HARMLESS VITAMIN.
 
 LABEL DEFINITIONS:
-- label=1 ONLY if the narrative clearly involves a vitamin or dietary supplement AND it does NOT contain IRON.
-  Examples (label=1): multivitamin WITHOUT iron, vitamin D, vitamin C gummies, melatonin gummies, herbal supplements, creatine, protein supplements.
+- label=1 ONLY if the narrative explicitly involves a clear, traditional VITAMIN or fish oil AND it does NOT contain IRON.
+  Examples (label=1): multivitamin WITHOUT iron, vitamin D, vitamin C gummies, fish oil.
 - label=0 for EVERYTHING ELSE, including:
-  - ANY product/formulation that contains IRON (including "iron", "Fe", "ferrous", "ferric", "ferro-", "prenatal with iron", "multivitamin with iron", "iron + vitamin C", "iron gummies", etc.)
-  - Prescription (e.g., fexofenadine, Tylenol, cough medicine, antibiotics, “tabs” with no supplement mention)
-  - Household chemicals/toxins (e.g., ammonia, detergent, bleach, windshield fluid)
-  - Unknown ingestion where the substance is not clearly a vitamin/supplement
+  - SUPPLEMENTS THAT ARE NOT VITAMINS (e.g., melatonin, diet pills, fat loss pills, herbal supplements, creatine, protein).
+  - CANNABIS PRODUCTS (e.g., marijuana gummies, CBD, THC).
+  - ANY product/formulation that contains IRON (including "iron", "Fe", "ferrous", "ferric", "prenatal with iron", "multivitamin with iron").
+  - Prescription/OTC medications, INCLUDING MISSPELLINGS (e.g., "xanTax", "Tylenol", "cough med").
+  - AMBIGUOUS/REDACTED ingestions (e.g., "children's chewable ***", "*** diet supplement") where the specific vitamin is unknown.
+  - Household chemicals/toxins.
 
-IRON EXCLUSION RULE (highest priority):
-- If the narrative mentions IRON or an iron formulation (e.g., "iron", "Fe", "ferrous sulfate", "ferrous", "prenatal with iron", "iron gummies", "iron + vit C"),
-  you MUST output label=0 even if it is a vitamin gummy or multivitamin.
+EXCLUSION RULES (highest priority - MUST be 0):
+1. IRON: Any mention of iron formulations.
+2. NON-VITAMIN SUPPLEMENTS: Melatonin, diet pills, botanicals.
+3. CANNABIS: CBD, marijuana.
+4. REDACTED/AMBIGUOUS: "chewable ***", "ingested ***". If you don't know EXACTLY what it is, label=0.
+5. DRUGS/MEDS: Any drug, even misspelled.
 
 GENERAL RULES:
-- Do not guess. If supplement/vitamin is not explicit, choose 0.
-- Ingestion alone does NOT imply label=1.
+- Do not guess. If a clear, safe vitamin is not explicit, choose 0.
 - Reason must cite the key phrase that triggered your decision.
 """.strip()
 
-# Few-shot examples WITH reasons (include hard negatives for iron exception)
+# Few-shot examples WITH reasons (include hard negatives for new clinical rules)
 FEW_SHOTS = [
-    # Positives (supplements/vitamins WITHOUT iron)
-    ("2 YOM INGESTED MULTIVITAMIN (NO IRON) GUMMIES.", 1, "Mentions 'multivitamin (no iron) gummies' which are supplements without iron."),
-    ("CHILD TOOK SEVERAL VITAMIN D PILLS.", 1, "Explicit 'vitamin D' ingestion (no iron mentioned)."),
-    ("ADULT TOOK MELATONIN GUMMIES; DIZZY.", 1, "Mentions 'melatonin gummies' (supplement; no iron)."),
-    ("2YOF ATE VITAMIN C GUMMIES.", 1, "Mentions 'vitamin C gummies' (vitamin supplement; no iron)."),
+    # Positives (pure vitamins WITHOUT iron)
+    ("2 YOM INGESTED MULTIVITAMIN (NO IRON) GUMMIES.", 1, "Mentions 'multivitamin (no iron) gummies' which is a pure vitamin without iron."),
+    ("CHILD TOOK SEVERAL VITAMIN D PILLS.", 1, "Explicit 'vitamin D' ingestion."),
+    ("POSSIBLE INGESTION OF FISH OIL PILLS", 1, "Explicit 'fish oil' which is accepted."),
+
+    # Hard negatives (Must be 0 based on new clinical rules)
+    ("ADULT TOOK MELATONIN GUMMIES; DIZZY.", 0, "Mentions 'melatonin' which is a non-vitamin supplement, excluded."),
+    ("3 YOF FOUND EATING CBD GUMMY.", 0, "Mentions 'CBD', cannabis products are excluded."),
+    ("PATIENT INGESTED APPROX 20 FAT LOSS PILLS.", 0, "Mentions 'fat loss pills', diet supplements are excluded."),
+    ("3YF FD WITH OPEN BOTTLE OF CHILDREN'S CHEWABLE ***.", 0, "Mentions 'chewable ***', redacted/ambiguous substances are excluded."),
+    ("18MOF OPENED BOTTLES OF GENERIC XANTAX.", 0, "Mentions 'XANTAX' (misspelled drug), medications are excluded."),
 
     # Iron exception hard negatives (MUST be 0)
-    ("2YOF ATE ADULT IRON + VIT C 18MG GUMMIES.", 0, "Mentions 'IRON + VIT C' / 'iron gummies' -> iron-containing formulation is excluded."),
-    ("PT TOOK TOO MANY IRON SUPPLEMENTS.", 0, "Mentions 'iron supplements' -> iron-containing formulation is excluded."),
-    ("PRENATAL VITAMINS WITH IRON INGESTION.", 0, "Mentions 'with iron' -> iron-containing formulation is excluded."),
-    ("PT INGESTED FERROUS SULFATE TABLETS.", 0, "Mentions 'ferrous sulfate' -> iron formulation is excluded."),
-
-    # Other hard negatives (non-supplement)
-    ("10MOM GOT INTO A BOTTLE OF FEXOFENADINE TABLETS.", 0, "Fexofenadine is an OTC medication, not a supplement."),
-    ("43YOF ALLERGIC RXN TO COUGH MED.", 0, "Cough medicine is medication, not a supplement."),
-    ("PT DRANK 4-8 OZ OF WINDSHIELD FLUID.", 0, "Windshield fluid is a toxic chemical, not a supplement."),
-    ("AMMONIA INGESTION - DRANK AMMONIA.", 0, "Ammonia is a household chemical, not a supplement."),
-    ("2YOF ATE POWDERED LAUNDRY DETERGENT.", 0, "Laundry detergent is a chemical, not a supplement."),
+    ("2YOF ATE ADULT IRON + VIT C 18MG GUMMIES.", 0, "Mentions 'IRON + VIT C', iron-containing formulation is excluded."),
+    ("PRENATAL VITAMINS WITH IRON INGESTION.", 0, "Mentions 'with iron', iron-containing formulation is excluded.")
 ]
 
 def build_prompt(narrative: str):
@@ -225,7 +226,7 @@ def get_ollama_prediction_with_reason(narrative: str):
 def run_ollama_classification(df, n_samples=200):
     tqdm.pandas(desc="Classifying with Ollama")
 
-    print("Running Llama3.1:8b few-shot classification with reasons on 200 samples...")
+    print(f"Running {MODEL_NAME} few-shot classification with reasons on {n_samples} samples...")
 
     # --- Balanced sample: 50% label 0 and 50% label 1 --- 
     n_each = n_samples // 2
@@ -252,10 +253,12 @@ def run_ollama_classification(df, n_samples=200):
 
 
 
-def evaluate_and_save(df_sample, out_excel="../data/NEISS_Supplement_200_Samples.xlsx"):
+def evaluate_and_save(df_sample, out_excel=None):
     """
     Evaluate the classification results and export data for downstream BERT training.
     """
+    if out_excel is None:
+        out_excel = f"../data/NEISS_Supplement_{len(df_sample)}_Samples.xlsx"
     print(f"Saving evaluation file to {out_excel}...")
     with pd.ExcelWriter(out_excel, engine="openpyxl") as writer:
         df_sample.to_excel(writer, sheet_name="sample_eval", index=False)
@@ -301,7 +304,7 @@ def main():
     analyze_word_frequencies(df)
     
     # 3. LLM Inference
-    df_classified = run_ollama_classification(df, n_samples=500)
+    df_classified = run_ollama_classification(df, n_samples=600)
     
     # 4. Metrics & Export
     evaluate_and_save(df_classified)
