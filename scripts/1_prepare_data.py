@@ -12,9 +12,12 @@ script Key Features:
 
 
 #%%
+%load_ext autoreload
+%autoreload 2
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -149,7 +152,21 @@ FEW_SHOTS = [
     ("PRENATAL VITAMINS WITH IRON INGESTION.", 0, "Mentions 'with iron', iron-containing formulation is excluded.")
 ]
 
-def build_prompt(narrative: str):
+EXCLUSION_RULES = [
+    (re.compile(r"\b(iron|fe|ferrous|ferric|ferro)\b", re.IGNORECASE), 
+     "Mentions iron formulation."),
+    (re.compile(r"\b(cbd|thc|marijuana|weed|cannabis|hemp)\b", re.IGNORECASE), 
+     "Mentions cannabis product."),
+    (re.compile(r"\b(melatonin)\b", re.IGNORECASE), 
+     "Mentions melatonin (non-vitamin supplement)."),
+    (re.compile(r"\b(diet pill|fat loss|weight loss)\b", re.IGNORECASE), 
+     "Mentions weight-loss/diet supplement."),
+    (re.compile(r"\*\*\*", re.IGNORECASE), 
+     "Contains redacted/ambiguous substance (***).")
+]
+
+
+def build_prompt(narrative: str) -> str:
     examples_block = "\n".join(
         [f'Narrative: {t}\nOutput: {json.dumps({"reason": r, "label": l})}'
          for t, l, r in FEW_SHOTS]
@@ -166,7 +183,7 @@ def build_prompt(narrative: str):
 
 
 
-def parse_json_output(text: str):
+def parse_json_output(text: str) -> dict | None:
     """Parses the strict JSON output from Ollama."""
     try:
         obj = json.loads(text.strip())
@@ -179,11 +196,11 @@ def parse_json_output(text: str):
 
 
 
-def get_ollama_prediction_with_reason(narrative: str):
-    IRON_PAT = re.compile(r"\b(iron|fe|ferrous|ferric|ferro)\b", re.IGNORECASE)
-    # Hard rule: any iron mention => 0 (prevents LLM mistakes)
-    if IRON_PAT.search(narrative):
-        return 0, "Mentions iron formulation (e.g., 'iron/Fe/ferrous'); iron-containing products are excluded."
+def get_ollama_prediction_with_reason(narrative: str) -> tuple[int, str]:
+    # Hard rules
+    for pattern, reason_text in EXCLUSION_RULES:
+        if pattern.search(narrative):
+            return 0, f"Hard Rule: {reason_text}"
 
     prompt = build_prompt(narrative)
 
@@ -223,7 +240,7 @@ def get_ollama_prediction_with_reason(narrative: str):
 
 
 
-def run_ollama_classification(df, n_samples=200):
+def run_ollama_classification(df: pd.DataFrame, n_samples: int = 200) -> pd.DataFrame:
     tqdm.pandas(desc="Classifying with Ollama")
 
     print(f"Running {MODEL_NAME} few-shot classification with reasons on {n_samples} samples...")
@@ -253,41 +270,29 @@ def run_ollama_classification(df, n_samples=200):
 
 
 
-def evaluate_and_save(df_sample, out_excel=None):
+def save(df_sample: pd.DataFrame, out_excel: str | None = None) -> None:
     """
-    Evaluate the classification results and export data for downstream BERT training.
+    Saves LLM-classified data for review and exports clean data for BERT training.
     """
     if out_excel is None:
         out_excel = f"../data/NEISS_Supplement_{len(df_sample)}_Samples.xlsx"
-    print(f"Saving evaluation file to {out_excel}...")
+    
+    print(f"Saving LLM results for review: {out_excel}")
     with pd.ExcelWriter(out_excel, engine="openpyxl") as writer:
         df_sample.to_excel(writer, sheet_name="sample_eval", index=False)
 
-    # Clean export for BERT script
+    # Export for BERT (Ensuring we use the LLM Teacher's labels)
     os.makedirs("../data", exist_ok=True)
     out_csv = "../data/bert_training_data.csv"
-    print(f"Saving clean dataset for BERT to {out_csv}...")
     
-    df_bert = df_sample[["Narrative", "Ground_Truth"]].copy()
-    df_bert.rename(columns={"Ground_Truth": "label", "Narrative": "text"}, inplace=True)
+    # CRITICAL: We take the LLM's intelligence (Ollama_Label) as the new reference
+    df_bert = df_sample[["Narrative", "Ollama_Label"]].copy()
+    df_bert.rename(columns={"Ollama_Label": "label", "Narrative": "text"}, inplace=True)
+    
+    # Drop parsing failures to ensure data quality
+    df_bert = df_bert.dropna(subset=["label"])
     df_bert.to_csv(out_csv, index=False)
-
-
-    y_true = df_sample["Ground_Truth"].astype(int)
-    pred_col = "Ollama_Label" if "Ollama_Label" in df_sample.columns else "Ollama_Prediction"
-    y_pred = df_sample[pred_col].astype(int)
-
-    print(f"Accuracy:  {accuracy_score(y_true, y_pred):.4f}")
-    print(f"Precision: {precision_score(y_true, y_pred, zero_division=0):.4f}")
-    print(f"Recall:    {recall_score(y_true, y_pred, zero_division=0):.4f}")
-
-    print("\n--- Detailed Classification Report ---")
-    print(classification_report(y_true, y_pred, digits=4, zero_division=0))
-
-    cm = confusion_matrix(y_true, y_pred)
-    print("--- Confusion Matrix ---")
-    print(f"True Negatives:  {cm[0][0]:<4} | False Positives: {cm[0][1]:<4}")
-    print(f"False Negatives: {cm[1][0]:<4} | True Positives:  {cm[1][1]:<4}\n")
+    print(f"Clean BERT dataset exported: {out_csv} ({len(df_bert)} rows)")
 
 
 
@@ -304,10 +309,10 @@ def main():
     analyze_word_frequencies(df)
     
     # 3. LLM Inference
-    df_classified = run_ollama_classification(df, n_samples=600)
+    df_classified = run_ollama_classification(df, n_samples=500)
     
-    # 4. Metrics & Export
-    evaluate_and_save(df_classified)
+    # 4. Save and Export
+    save(df_classified)
     
     print("--- Pipeline Completed ---")
 
