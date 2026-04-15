@@ -29,8 +29,8 @@ graph LR
     classDef user fill:#f4f5f6,stroke:#6e757c,stroke-width:1px;
 
     %% Nodes
-    Data[(Raw NEISS Data<br>90k+ Narratives)]:::block
-    Agent{Ollama Agent<br>Llama 3.1 Labeling}:::agent
+    Data[(Raw NEISS Data<br>91k+ Narratives)]:::block
+    Agent{Ollama Agent<br>gemma4:e4b Labeling}:::agent
     
     Preproc[Few-Shot Bootstrapping<br>& Hybrid Sampling]:::block
     
@@ -59,9 +59,9 @@ graph LR
 
 ### 1. Zero-Shot / Few-Shot Data Labeling (The Teacher)
 * **Script:** `scripts/1_prepare_data.py`
-* **Model:** `Llama 3.1:8b` (via Ollama)
-* **Function:** Instead of manual labeling, we use a local LLM as a "Silver Standard" labeler. Through strict Chain-of-Thought (CoT) prompting, the model evaluates a subset of narratives to identify true supplement exposures.
-* **Hybrid Sampling:** To handle extreme class imbalance (0.3% prevalence), we implement **oversampling** of positive cases and **undersampling** of hard negatives (e.g., iron, bleach, pharmaceuticals) to provide a balanced training signal for the next stage.
+* **Model:** `gemma4:e4b` (via Ollama)
+* **Function:** Instead of manually labeling thousands of medical narratives, we use a local Large Language Model as a "Silver Standard" labeler. Utilizing a strict Chain-of-Thought (CoT) prompt and JSON structured output, the model evaluates a sample of narratives to identify true supplement exposures.
+* **Filtering:** The model is instructed to rigorously filter out exceptions such as iron toxicity, pharmaceuticals, and household chemicals, creating a high-quality "Ground Truth" training dataset.
 
 ### 2. Fine-Tuning & Mass Inference (The Student)
 * **Script:** `scripts/2_train_bert.py`
@@ -77,21 +77,17 @@ graph LR
 
 ---
 
-## Setup & Usage
+## Setup & Requirements
 
-1. **Prerequisites:**
-   * Install [Ollama](https://ollama.com/) and pull the required model: `ollama pull llama3.1`.
-   * Install Python dependencies: `pip install -r requirements.txt`.
-
-2. **Data Preparation:**
+1. **Ollama:** Ensure [Ollama](https://ollama.com/) is installed and the model is available:
    ```bash
-   python scripts/1_prepare_data.py --samples 2000
+   ollama pull gemma4:e4b
    ```
-
-3. **Model Training:**
+2. **Python Environment:**
    ```bash
-   python scripts/2_train_bert.py
+   pip install -r requirements.txt
    ```
-
-4. **Analysis:**
-   Open `temporal_analysis.ipynb` to generate final epidemiological plots and regression summaries.
+3. **Execution:**
+   * Run `scripts/1_prepare_data.py` to generate the training set.
+   * Run `scripts/2_train_bert.py` to train the classifier and process the full database.
+   * Use `temporal_analysis.ipynb` for final reporting.
