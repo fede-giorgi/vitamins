@@ -1,4 +1,16 @@
 # %%
+"""
+BERT Fine-Tuning and Inference Pipeline for NEISS Data
+
+This script defines the entire process of training a LoRA-adapted BERT model
+for classifying emergency department narratives related to vitamins and supplements.
+
+Key Steps:
+1. Data Loading & Hybrid Resampling: Combines oversampling and undersampling to mitigate class imbalance.
+2. Tokenization & DataLoader Creation: Prepares text data for PyTorch training.
+3. Model Training: Fine-tunes a pre-trained BERT model using LoRA.
+4. Full Inference: Applies the trained model to the full dataset to generate final predictions.
+"""
 %load_ext autoreload
 %autoreload 2
 
@@ -28,8 +40,17 @@ from functools import partial
 
 def load_datasets(train_csv_path, full_excel_path):
     """
-    Loads the datasets and applies Hybrid Resampling (Oversampling minority + Undersampling majority)
-    to fix Extreme Class Imbalance and the 'Empty Batch Problem'.
+    Loads the datasets and applies a Hybrid Resampling Strategy.
+    This strategy involves oversampling the minority class and undersampling
+    the majority class to resolve extreme class imbalances and the 'Empty Batch Problem'.
+    
+    Args:
+        train_csv_path (str): Filepath to the CSV containing the LLM-labeled training data.
+        full_excel_path (str): Filepath to the Excel file containing the entire NEISS dataset.
+        
+    Returns:
+        tuple[pd.DataFrame, pd.DataFrame]: A tuple containing the balanced training dataframe 
+                                           and the full inference dataframe.
     """
     print(f"Loading training data from {train_csv_path}...")
     df_train = pd.read_csv(train_csv_path)
@@ -37,10 +58,12 @@ def load_datasets(train_csv_path, full_excel_path):
     print(f"Loading full dataset for inference from {full_excel_path}...")
     df_full = load_and_preprocess_data(full_excel_path)
     
+    # Ensure text columns are exclusively treated as strings before tokenization
     df_train['text'] = df_train['text'].astype(str)
     df_full['Narrative'] = df_full['Narrative'].astype(str)
     
     # --- HYBRID SAMPLING LOGIC ---
+    # Separate the dataset into positive (vitamin/supplement) and negative classes
     df_pos = df_train[df_train['label'] == 1]
     df_neg = df_train[df_train['label'] == 0]
     
@@ -61,7 +84,19 @@ def load_datasets(train_csv_path, full_excel_path):
 
 
 def preprocessing(input_text, tokenizer):
-    """Helper function to tokenize properly."""
+    """
+    Helper function to tokenize text properly for the BERT model.
+    It adds special model tokens ([CLS], [SEP]), pads short strings, 
+    and truncates overly long strings to uniform tensor shapes.
+    
+    Args:
+        input_text (str): The raw text narrative to tokenize.
+        tokenizer (BertTokenizer): The pre-trained BERT tokenizer instance.
+        
+    Returns:
+        dict: A dictionary containing 'input_ids' and 'attention_mask' tensors.
+    """
+    # Tokenize input using BERT specifications
     return tokenizer(
         str(input_text),
         add_special_tokens=True,
@@ -74,7 +109,16 @@ def preprocessing(input_text, tokenizer):
 
 def prepare_dataloaders(df_train, tokenizer, batch_size=32):
     """
-    Tokenizes the training text and creates PyTorch DataLoaders.
+    Tokenizes the training narratives and constructs PyTorch DataLoaders 
+    for both training and validation phases.
+    
+    Args:
+        df_train (pd.DataFrame): The balanced training dataframe.
+        tokenizer (BertTokenizer): The pre-trained BERT tokenizer instance.
+        batch_size (int): The batch size for the DataLoader. Defaults to 32.
+        
+    Returns:
+        tuple[DataLoader, DataLoader]: Training and validation DataLoaders ready for the model loop.
     """
     print("Tokenizing training data...")
     token_id = []
@@ -113,7 +157,18 @@ def prepare_dataloaders(df_train, tokenizer, batch_size=32):
 
 def run_inference_on_full_dataset(model, df_full, tokenizer, device, batch_size=32):
     """
-    Runs the trained BERT model on the complete NEISS dataset to generate final predictions.
+    Executes the trained BERT model over the complete NEISS dataset to generate 
+    final confidence scores and discrete predictions.
+    
+    Args:
+        model (torch.nn.Module): The fine-tuned BERT model.
+        df_full (pd.DataFrame): The original complete dataframe requiring classification.
+        tokenizer (BertTokenizer): The pre-trained BERT tokenizer.
+        device (torch.device): The computation device (CPU, CUDA, or MPS).
+        batch_size (int): Size of batches to process during inference. Defaults to 32.
+        
+    Returns:
+        pd.DataFrame: The full dataset enriched with 'bert_prediction' and 'bert_confidence' columns.
     """
     print(f"Running inference on {len(df_full)} total cases...")
     
@@ -159,7 +214,11 @@ def run_inference_on_full_dataset(model, df_full, tokenizer, device, batch_size=
     
 
 def main():
-    """Main pipeline orchestrator for BERT Fine-Tuning."""
+    """
+    Main pipeline orchestrator for BERT Fine-Tuning and large-scale inference.
+    It resolves hardware acceleration, schedules data curation, triggers model training,
+    and finally exports the fully classified dataset arrays to standard output formats.
+    """
     print("--- Starting BERT Training & Inference Pipeline ---")
     
     # Paths
