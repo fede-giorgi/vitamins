@@ -1,28 +1,97 @@
 # NEISS Vitamin & Supplement ED Visit Analysis
 
 ## Project Overview
-Vitamins, herbs, and dietary supplements are widely marketed as harmless and possibly helpful. This project investigates the National Electronic Injury Surveillance System (NEISS) database over the past 21 years to determine national temporal trends in emergency department (ED) visits related to poisoning or adverse reactions associated with these substances (e.g., ashwagandha, turmeric, vitamin B12, melatonin). 
+Vitamins, herbs, and dietary supplements are widely marketed as harmless and possibly helpful. This project investigates the **National Electronic Injury Surveillance System (NEISS)** database over the past 21 years to determine national temporal trends in emergency department (ED) visits related to poisoning or adverse reactions associated with these substances (e.g., ashwagandha, turmeric, vitamin B12, melatonin). 
 
 ### The Data (NEISS)
-The National Electronic Injury Surveillance System (NEISS) is a U.S. system managed by the Consumer Product Safety Commission (CPSC). It collects data on consumer product-related injuries treated in hospital emergency departments. By utilizing a probability sample of U.S. hospitals, the NEISS allows researchers to extrapolate and create highly accurate national estimates to inform public safety efforts and develop safety standards.
+The National Electronic Injury Surveillance System (NEISS) is a U.S. system managed by the Consumer Product Safety Commission (CPSC). It collects data on consumer product-related injuries treated in hospital emergency departments. 
 
-### Project Goals & Responsibilities
-The core responsibilities of this research involve extensive data cleansing, natural language classification of medical narratives, big data system analysis, sample-based extrapolation, and advanced data visualization. The ultimate measure of success is leveraging robust data analysis to accurately represent national trends in ED presentations. If the findings are sufficiently robust, this analysis will be submitted as a medical epidemiology paper.
+**National Estimates & Statistical Weighting:**
+By utilizing a probability sample of approximately 100 U.S. hospitals, the NEISS allows researchers to extrapolate and create highly accurate national estimates. Each case in the dataset is assigned a **statistical weight**; the sum of these weights represents the total estimated number of ED visits nationwide. This project leverages these weights to ensure all temporal and demographic trends reflect the entire U.S. population.
+
+### Project Goals
+* **Automated Classification:** Scalable processing of >90,000 medical narratives.
+* **Epidemiological Modeling:** Identifying statistically significant shifts in exposure patterns.
+* **Public Health Impact:** Distinguishing between safe vitamin use and high-risk supplement exposures (e.g., iron toxicity or non-vitamin botanicals).
+
+---
+
+## System Architecture
+
+The repository utilizes a **Teacher-Student Machine Learning Pipeline** to achieve high-precision classification at scale, followed by a rigorous statistical evaluation.
+
+```mermaid
+graph LR
+    %% Define Node Styles
+    classDef block fill:#ffffff,stroke:#004479,stroke-width:2px,color:#000000,font-weight:bold;
+    classDef model fill:#e6e8ea,stroke:#6e757c,stroke-width:2px,color:#000000,font-weight:bold;
+    classDef agent fill:#fff3e6,stroke:#ffa500,stroke-width:2px,stroke-dasharray: 5 5,color:#000000,font-weight:bold;
+    classDef user fill:#f4f5f6,stroke:#6e757c,stroke-width:1px;
+
+    %% Nodes
+    Data[(Raw NEISS Data<br>90k+ Narratives)]:::block
+    Agent{Ollama Agent<br>Llama 3.1 Labeling}:::agent
+    
+    Preproc[Few-Shot Bootstrapping<br>& Hybrid Sampling]:::block
+    
+    subgraph Machine Learning Pipeline
+        BERT[BERT-base-uncased]:::model
+        LoRA[LoRA Fine-Tuning]:::model
+        Inf[Mass Batch Inference]:::model
+    end
+    
+    Stats[OLS Multivariate<br>Regression]:::block
+    Viz[National Trend<br>Visualizations]:::block
+
+    %% Data Flow
+    Data ==> Preproc
+    Preproc ==> Agent
+    Agent -.->|Ground Truth Generation| BERT
+    BERT ==> LoRA
+    LoRA ==> Inf
+    Inf ==> Stats
+    Stats ==> Viz
+```
 
 ---
 
 ## Repository Architecture & Workflow
 
-Given the massive volume of the 21-year dataset and the complexity of medical narratives, this repository utilizes a modern, two-step Machine Learning pipeline to classify the data, followed by rigorous statistical analysis.
-
-### 1. Zero-Shot / Few-Shot Data Labeling (LLaMA)
+### 1. Zero-Shot / Few-Shot Data Labeling (The Teacher)
 * **Script:** `scripts/1_prepare_data.py`
-* **Function:** Instead of manually labeling thousands of medical narratives, we use a local Large Language Model (`Llama 3.1:8b` via Ollama). Utilizing a strict Chain-of-Thought (CoT) prompt and JSON structured output, the model evaluates a sample of narratives to identify true supplement exposures while rigorously filtering out exceptions (e.g., iron toxicity, pharmaceuticals, household chemicals). This creates a high-quality "Ground Truth" training dataset.
+* **Model:** `Llama 3.1:8b` (via Ollama)
+* **Function:** Instead of manual labeling, we use a local LLM as a "Silver Standard" labeler. Through strict Chain-of-Thought (CoT) prompting, the model evaluates a subset of narratives to identify true supplement exposures.
+* **Hybrid Sampling:** To handle extreme class imbalance (0.3% prevalence), we implement **oversampling** of positive cases and **undersampling** of hard negatives (e.g., iron, bleach, pharmaceuticals) to provide a balanced training signal for the next stage.
 
-### 2. Fine-Tuning & Mass Inference (BERT + LoRA)
+### 2. Fine-Tuning & Mass Inference (The Student)
 * **Script:** `scripts/2_train_bert.py`
-* **Function:** A `bert-base-uncased` sequence classifier is fine-tuned on the LLaMA-generated dataset using Low-Rank Adaptation (LoRA). Once trained, the BERT model performs high-speed, batched inference across the entire remaining NEISS database (tens of thousands of records). This approach perfectly balances the deep reasoning capabilities of LLMs with the raw speed and efficiency of BERT.
+* **Model:** `bert-base-uncased` + LoRA
+* **Function:** A BERT sequence classifier is fine-tuned on the LLM-generated dataset using **Low-Rank Adaptation (LoRA)**. 
+* **Scalability:** Once the student model (BERT) reaches convergence, it performs high-speed inference across the entire 21-year database. This approach achieves a **200x speedup** compared to processing the whole dataset via LLM while maintaining deep semantic understanding.
 
 ### 3. Statistical & Temporal Analysis
 * **Notebook:** `temporal_analysis.ipynb`
-* **Function:** The final classified dataset is ingested for epidemiological evaluation. We utilize Ordinary Least Squares (OLS) Multivariate Linear Regression models, complete with interaction terms, to analyze absolute yearly trends, normalized seasonality, and stratified demographic shifts (Age, Sex, Race, Patient Disposition). The outputs include automated national extrapolations, interaction $p$-values, and production-ready data visualizations for the academic paper.
+* **Modeling:** Ordinary Least Squares (OLS) Linear Regression with **Heteroscedasticity and Autocorrelation Consistent (HAC)** standard errors.
+* **Interaction Terms:** We model the interaction between `Year` and `Category` to detect if specific demographics (e.g., pediatric age groups) are diverging from the national baseline.
+* **Seasonality:** Analysis of normalized monthly shares to identify cyclic patterns in vitamin-related hospitalizations.
+
+---
+
+## Setup & Usage
+
+1. **Prerequisites:**
+   * Install [Ollama](https://ollama.com/) and pull the required model: `ollama pull llama3.1`.
+   * Install Python dependencies: `pip install -r requirements.txt`.
+
+2. **Data Preparation:**
+   ```bash
+   python scripts/1_prepare_data.py --samples 2000
+   ```
+
+3. **Model Training:**
+   ```bash
+   python scripts/2_train_bert.py
+   ```
+
+4. **Analysis:**
+   Open `temporal_analysis.ipynb` to generate final epidemiological plots and regression summaries.
