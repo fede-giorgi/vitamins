@@ -309,7 +309,7 @@ def main():
     analyze_word_frequencies(df)
     
     # 3. LLM Inference
-    df_classified = run_ollama_classification(df, n_samples=500)
+    df_classified = run_ollama_classification(df, n_samples=5000)
     
     # 4. Save and Export
     save(df_classified)
