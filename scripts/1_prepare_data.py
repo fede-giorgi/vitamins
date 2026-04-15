@@ -34,71 +34,6 @@ plt.style.use('ggplot')
 plt.rcParams['figure.figsize'] = (12, 6)
 
 
-
-def get_word_freq(text_series):
-    """
-    Get word frequencies from a text series.
-    """
-    all_text = ' '.join(text_series.dropna().astype(str)).upper()
-    words = re.findall(r'\b[A-Z]{3,}\b', all_text)  # correct word boundary
-    counter = Counter(words)
-    total = sum(counter.values())
-    freqs = {w: c / total for w, c in counter.items()} if total > 0 else {}
-    return freqs, counter
-
-
-
-def analyze_word_frequencies(df):
-    """
-    Analyze word frequencies to identify discriminative words.
-    """
-    threshold = 1000 # max unique values to consider categorical
-    cat_cols = []
-    for col in df.columns:
-        if (
-            df[col].dtype == 'object' or 
-            df[col].dtype.name == 'category' or
-            (df[col].dtype in ['int64','float64'] and df[col].nunique() < threshold)
-        ):
-            cat_cols.append(col)
-
-    print("Categorical columns detected:")
-    print(cat_cols)
-
-    VITAMIN_CODES = [1927, 1931, 1932, '1927', '1931', '1932']
-    # Ground Truth Definition
-    # check across all three product columns
-    df['Ground_Truth'] = (
-        df[['Product_1','Product_2','Product_3']]
-        .isin(VITAMIN_CODES)
-        .any(axis=1)
-        .astype(int)
-    )
-
-    print("Analyzing word distributions...")
-    freq1, counts1 = get_word_freq(df[df['Ground_Truth'] == 1]['Narrative'])
-    freq0, counts0 = get_word_freq(df[df['Ground_Truth'] == 0]['Narrative'])
-    print("Vitamin class total tokens:", sum(counts1.values()))
-    print("Vitamin class max token count:", max(counts1.values()) if counts1 else 0)
-
-    # discriminative score (smoothed ratio)
-    min_count = 10
-    alpha = 1
-
-    scores = []
-    for word, c1 in counts1.items():
-        if c1 >= min_count:
-            c0 = counts0.get(word, 0)
-            score = (c1 + alpha) / (c0 + alpha)
-            scores.append((word, c1, c0, score))
-
-    scores.sort(key=lambda x: x[3], reverse=True)
-    top_supplement_words = [w for w, _, _, _ in scores[:20]]
-    print("Top words indicating a Supplement exposure:")
-    print(top_supplement_words)
-
-
-
 MODEL_NAME = "gemma4:e4b"
 
 SYSTEM_MSG = """
@@ -305,13 +240,10 @@ def main():
     # 1. Data Loading
     df = load_and_preprocess_data('../data/PoisonedOnly_NEISS_2004-2023.xlsx')
     
-    # 2. Statistical Analysis (printed to console)
-    analyze_word_frequencies(df)
-    
-    # 3. LLM Inference
+    # 2. LLM Inference
     df_classified = run_ollama_classification(df, n_samples=5000)
     
-    # 4. Save and Export
+    # 3. Save and Export
     save(df_classified)
     
     print("--- Pipeline Completed ---")

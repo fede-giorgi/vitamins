@@ -28,23 +28,37 @@ from functools import partial
 
 def load_datasets(train_csv_path, full_excel_path):
     """
-    Loads the Ollama-labeled dataset for training and the full dataset for inference.
+    Loads the datasets and applies Hybrid Resampling (Oversampling minority + Undersampling majority)
+    to fix Extreme Class Imbalance and the 'Empty Batch Problem'.
     """
     print(f"Loading training data from {train_csv_path}...")
     df_train = pd.read_csv(train_csv_path)
     
     print(f"Loading full dataset for inference from {full_excel_path}...")
-    # Assumes the function from src.load_data returns the parsed dataframe
     df_full = load_and_preprocess_data(full_excel_path)
     
-    # Ensure text columns are string
     df_train['text'] = df_train['text'].astype(str)
     df_full['Narrative'] = df_full['Narrative'].astype(str)
     
-    print(f"Training set size: {len(df_train)}")
-    print(f"Full inference set size: {len(df_full)}")
+    # --- HYBRID SAMPLING LOGIC ---
+    df_pos = df_train[df_train['label'] == 1]
+    df_neg = df_train[df_train['label'] == 0]
     
-    return df_train, df_full
+    print(f"Original imbalance: {len(df_pos)} Positives vs {len(df_neg)} Negatives.")
+    
+    # 1. Oversample Positives: Duplicate the 16 cases so they consistently appear in batches
+    df_pos_over = df_pos.sample(n=400, replace=True, random_state=42)
+    
+    # 2. Undersample Negatives: Keep enough to teach the model about 'bleach' and 'drugs'
+    df_neg_under = df_neg.sample(n=800, random_state=42)
+    
+    # Recombine into a fast, rich, 1:2 ratio dataset
+    df_train_balanced = pd.concat([df_pos_over, df_neg_under]).sample(frac=1, random_state=42).reset_index(drop=True)
+    
+    print(f"New Hybrid dataset size: {len(df_train_balanced)} rows (400 Pos vs 800 Neg).")
+    
+    return df_train_balanced, df_full
+
 
 def preprocessing(input_text, tokenizer):
     """Helper function to tokenize properly."""
@@ -152,6 +166,7 @@ def main():
     TRAIN_CSV = '../data/bert_training_data.csv'
     FULL_EXCEL = '../data/PoisonedOnly_NEISS_2004-2023.xlsx'
     OUTPUT_CSV = '../data/NEISS_Final_Classified.csv'
+    OUTPUT_EXCEL = '../data/NEISS_Final_Classified.xlsx'
     
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -167,18 +182,23 @@ def main():
     
     # 2. Tokenize and prepare loaders
     tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True)
-    train_loader, val_loader = prepare_dataloaders(df_train, tokenizer)
+    train_loader, val_loader = prepare_dataloaders(df_train, tokenizer, batch_size=8)
     
     # 3. Build and Train Model
     model = build_lora_model(device)
-    trained_model = train_model(model, train_loader, val_loader, device, epochs=5)
+    trained_model = train_model(model, train_loader, val_loader, device, epochs=8)
     
     # 4. Final Inference on the entire database
     df_final = run_inference_on_full_dataset(trained_model, df_full, tokenizer, device)
     
     # 5. Export results
-    print(f"Saving fully classified dataset to {OUTPUT_CSV}...")
-    df_final.to_csv(OUTPUT_CSV, index=False)
+    print(f"Saving fully classified dataset to CSV: {OUTPUT_CSV}...")
+    df_final.to_csv(OUTPUT_CSV, index=False) # Standard CSV export for downstream Python tasks
+    
+    print(f"Saving fully classified dataset to Excel: {OUTPUT_EXCEL}...")
+    # Exporting to Excel format for easier sharing and manual review by stakeholders
+    df_final.to_excel(OUTPUT_EXCEL, index=False, engine='openpyxl') 
+    
     print("--- Pipeline Completed ---")
 
 if __name__ == '__main__':
