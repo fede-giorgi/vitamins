@@ -20,9 +20,15 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import json, re
-import ollama
 import os
+from dotenv import load_dotenv
+
+from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import SystemMessage, HumanMessage
 from tqdm.auto import tqdm
+from concurrent.futures import ThreadPoolExecutor
 
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, classification_report
 from collections import Counter
@@ -31,14 +37,39 @@ from src.load_data import load_and_preprocess_data
 plt.style.use('ggplot')
 plt.rcParams['figure.figsize'] = (12, 6)
 
+load_dotenv()
 
+# --- Configurazione LLM ---
+#LLM_PROVIDER = "gemini"       # "ollama", "openai", "gemini"
+#MODEL_NAME = "gemini-3.1-flash-lite-preview" # "gemma4:e4b", "gpt-4o-mini", "gemini-3.1-flash-lite-preview"
+
+LLM_PROVIDER = "ollama" 
 MODEL_NAME = "gemma4:e4b"
+
+def get_llm():
+    """Factory function per istanziare il modello LangChain in base al provider."""
+    if LLM_PROVIDER == "ollama":
+        return ChatOllama(model=MODEL_NAME, temperature=0, format="json")
+    elif LLM_PROVIDER == "openai":
+        return ChatOpenAI(model=MODEL_NAME, temperature=0, model_kwargs={"response_format": {"type": "json_object"}})
+    elif LLM_PROVIDER == "gemini":
+        return ChatGoogleGenerativeAI(model=MODEL_NAME, temperature=0)
+    else:
+        raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER}")
+
+# Inizializza il modello a livello globale
+llm = get_llm()
 
 SYSTEM_MSG = """
 You are a strict binary classifier for emergency department (ED) narratives.
+You will receive a batch of narratives formatted as a JSON dictionary: {"id_1": "text_1", "id_2": "text_2", ...}
 
-OUTPUT FORMAT (must be valid JSON on a single line):
-{"reason": "short reason", "label": 0 or 1}
+OUTPUT FORMAT: You MUST return a JSON array containing EXACTLY ONE dictionary for each narrative provided.
+Example:
+[
+  {"id": "id_1", "reason": "short reason", "label": 0},
+  {"id": "id_2", "reason": "short reason", "label": 1}
+]
 
 TASK:
 Classify whether the narrative involves exposure/ingestion/overdose/adverse reaction to a STRICTLY HARMLESS VITAMIN.
@@ -48,17 +79,17 @@ LABEL 1 (POSITIVE) - INCLUSION RULES:
   Examples: "multivitamin", "childrens gummy multivitamins", "vitamin D", "vitamin C", "fish oil".
 - CO-INGESTIONS: If the patient ingested a safe vitamin AND a medication (e.g., "ingested beta blocker and multivitamin"), label it 1. The presence of a med does not cancel the vitamin.
 - MISSPELLINGS & TYPOS: ED narratives are badly written. You MUST tolerate and accept typos for vitamins (e.g., "mutivitiamins", "vitmin", "gummis").
-- PARTIAL REDACTIONS: If a clear vitamin is mentioned alongside a redacted word (e.g., "multivitamin and ***"), label it 1.
+- REDACTED BRANDS (***): If the word "vitamin" is present but the brand is redacted (e.g., "***VITAMINS", "VITAMINS ***"), label it 1. The asterisks just hide the brand name, it is still a vitamin.
 
 LABEL 0 (NEGATIVE) - EXCLUSION RULES (Highest Priority):
-- label=0 for EVERYTHING ELSE. You must strictly exclude:
-  1. IRON EXCEPTION: Any explicit mention of iron (e.g., "WITH IRON", "IRON", "Fe", "ferrous sulfate"). *Note: Standard "multivitamins" are assumed SAFE (label=1) UNLESS iron is explicitly stated.*
+- EXCLUSIONS OVERRIDE INCLUSIONS: If ANY of the following are true, you MUST label=0, even if the word "vitamin" is present.
+  1. IRON & PRENATAL EXCEPTION: Any explicit mention of iron (e.g., "WITH IRON", "IRON", "Fe", "ferrous"). AND ALL "PRENATAL" or "PRENAT" vitamins MUST be excluded (label=0) because they implicitly contain toxic amounts of iron. *Note: Standard "multivitamins" are safe unless iron is stated.*
   2. NON-VITAMIN SUPPLEMENTS: Melatonin, diet pills, fat loss pills, herbal supplements, botanicals, creatine, protein.
   3. CANNABIS: CBD, THC, marijuana gummies, weed.
-  4. FULLY REDACTED/AMBIGUOUS: If the *entire* ingested substance is unknown (e.g., "ate chewable ***", "ingested *** pill"), label it 0.
+  4. FULLY REDACTED: ONLY if the *entire* substance is unknown AND the word 'vitamin' is missing (e.g., "ate chewable ***"), label it 0.
   5. PRESCRIPTION/OTC DRUGS: Any standard medication.
-  6. DRUG TYPOS: Be highly vigilant for badly written, misspelled, or abbreviated medications (e.g., "xanTax", "tylenol", "ibuprofin", "cough med"). If it's a misspelled drug (and NO vitamin is present), label=0.
-  7. HOUSEHOLD TOXINS: Chemicals, cleaning products, etc.
+  6. DRUG TYPOS: Be highly vigilant for misspelled drugs (e.g., "xanTax", "tylenol", "ibuprofin").
+  7. HOUSEHOLD/COSMETICS TOXINS: Shampoos, lotions, creams, or soaps that happen to have "vitamin" in their name (e.g., "shampoo with vitamin E"). These are chemicals, NOT dietary supplements.
 
 GENERAL RULES:
 - ACCEPT GENERIC TERMS (BENEFIT OF THE DOUBT): If the text mentions generic "vitamins", "gummy vitamins", "vitamin pills", or "childrens vitamins" without specifying the exact type, ASSUME THEY ARE SAFE (label=1) as long as NO exclusion keywords (iron, melatonin, drugs, etc.) are present. Do not punish the narrative for being vague.
@@ -67,21 +98,24 @@ GENERAL RULES:
 
 # Few-shot examples WITH reasons (include hard negatives for new clinical rules)
 FEW_SHOTS = [
-    # Positives (Standard vitamins, even with typos or redactions)
+    # Positives
     ("4YOM WITH ABD PAIN S/P EATING HANDFUL OF CHILDRENS GUMMY MULTIVITAMINS", 1, "Explicit mention of 'childrens gummy multivitamins'. This is a standard safe vitamin."),
     ("PT INGESTED 10 MUTIVITIAMINS THEY WERE IN A PLASTIC BAG", 1, "Mentions 'mutivitiamins' (misspelled). Assumed safe unless iron is explicitly mentioned."),
+    ("16MOF GOT INTO VITAMINS 4 DAYS AGO, INGESTED UNKNOWN NUMBER OF ***,***,***", 1, "The generic word 'VITAMINS' is present. The asterisks merely hide the brand. Assumed safe."),
+    ("PT ATE ***VITAMINS", 1, "The word 'VITAMINS' is attached to the redaction. It is a vitamin, asterisks just hide the brand."),
     ("3YOF INGESTION OF 20 MULTIVITAMIN GUMMIES, *** GUMMIES.", 1, "Clear mention of 'multivitamin gummies'. The presence of redacted '***' does not negate the vitamin ingestion."),
     ("INGESTED BETA BLOCKER PILL, MULTI VITAMIN AND POTASSIUM PILL", 1, "Co-ingestion. A 'multi vitamin' is explicitly mentioned, even alongside medications."),
 
-    # Hard negatives (Must be 0 based on clinical rules)
+    # Hard negatives
+    ("23MOM SWALLOWED *** SHAMPOO LUXURIOUS MOISTURE & VITAMINE", 0, "Mentions 'shampoo'. Cosmetics and household chemicals are excluded, even if they contain the word vitamin."),
+    ("PT INGESTED 1 *** PRENAT VITAMIN", 0, "Mentions 'PRENAT VITAMIN'. Prenatal vitamins implicitly contain high iron and must be excluded."),
     ("ADULT TOOK MELATONIN GUMMIES; DIZZY.", 0, "Mentions 'melatonin', which is an excluded non-vitamin supplement."),
     ("3 YOF FOUND EATING CBD GUMMY.", 0, "Mentions 'CBD', cannabis products are excluded."),
-    ("PATIENT INGESTED APPROX 20 FAT LOSS PILLS.", 0, "Mentions 'fat loss pills', diet supplements are excluded."),
     ("3YF FD WITH OPEN BOTTLE OF CHILDREN'S CHEWABLE ***.", 0, "The specific substance is totally redacted ('***'). We cannot confirm it is a vitamin."),
 
-    # Iron exceptions (Must be 0)
-    ("APPROX 20 VITAMINS MISSING FROM BOTTLEOF VITAMINS WITH IRON.", 0, "Explicitly mentions 'VITAMINS WITH IRON'."),
-    ("PRENATAL VITAMINS WITH IRON INGESTION.", 0, "Explicitly mentions 'WITH IRON'.")
+    # Iron exceptions
+    ("PATIENT INGESTED 1/2 BOTTLE *** VITAMINS 10 MG IRON", 0, "Explicitly mentions 'IRON' in the formulation."),
+    ("PRENATAL VITAMINS WITH IRON INGESTION.", 0, "Explicitly mentions 'PRENATAL' and 'IRON'. Both trigger exclusion.")
 ]
 
 EXCLUSION_RULES = [
@@ -94,120 +128,145 @@ EXCLUSION_RULES = [
 ]
 
 
-def build_prompt(narrative: str) -> str:
+def build_prompt(narratives_dict: dict) -> str:
     """
-    Constructs the prompt for the Ollama model by combining the dynamic narrative
+    Constructs the prompt for the LangChain model by combining the dynamic batch of narratives
     with predefined few-shot examples.
-    
-    Args:
-        narrative (str): The clinical narrative text to classify.
-        
-    Returns:
-        str: The fully formatted prompt ready for the LLM.
     """
-    # Create a block of examples showing the desired JSON output format
-    examples_block = "\n".join(
-        [f'Narrative: {t}\nOutput: {json.dumps({"reason": r, "label": l})}'
-         for t, l, r in FEW_SHOTS]
-    )
+    examples_block = "[\n" + ",\n".join(
+        [f'  {{"id": "ex{i}", "narrative": {json.dumps(t)}, "output": {json.dumps({"reason": r, "label": l})}}}'
+         for i, (t, l, r) in enumerate(FEW_SHOTS)]
+    ) + "\n]"
+    
     return f"""
-    Classify the FINAL narrative.
+    Classify the following FINAL batch of narratives.
 
-    EXAMPLES:
+    EXAMPLES of correctly classified items:
     {examples_block}
 
-    FINAL Narrative: {narrative}
-    Output:
+    FINAL BATCH TO CLASSIFY:
+    {json.dumps(narratives_dict, indent=2)}
+    
+    Output exactly a JSON array containing the predictions. Do not add markdown text around the array.
     """.strip()
 
 
 
-def parse_json_output(text: str) -> dict | None:
+def parse_json_output(text) -> list | None:
     """
-    Parses the strict JSON output from Ollama and validates the required fields.
-    
-    Args:
-        text (str): The raw text output generated by the LLM.
-        
-    Returns:
-        dict | None: The parsed dictionary containing 'label' and 'reason' if valid,
-                     otherwise None if parsing or validation fails.
+    Parses the JSON array output from LangChain and validates the required fields.
+    Also strips markdown wrappers (```json ... ```) and handles Gemini's list output.
     """
     try:
-        # Attempt to load the JSON string into a Python dictionary
-        obj = json.loads(text.strip())
-        # Validate that required keys are present and the label is binary
-        if "label" in obj and "reason" in obj and obj["label"] in [0, 1]:
-            obj["reason"] = str(obj["reason"]).strip()
+        # Handle langchain-google-genai returning lists instead of strings
+        if isinstance(text, list):
+            if len(text) > 0 and isinstance(text[0], dict) and "text" in text[0] and "id" not in text[0]:
+                for item in text:
+                    if isinstance(item, dict) and "text" in item:
+                        text = item["text"]
+                        break
+                else:
+                    text = str(text)
+            else:
+                pass # Already a parsed array
+
+        if not isinstance(text, str) and not isinstance(text, list):
+            text = str(text)
+
+        if isinstance(text, str):
+            text = text.strip()
+            # Strip potential markdown formatting that LLMs often incorrectly add
+            if text.startswith("```json"):
+                text = text[7:]
+            elif text.startswith("```"):
+                text = text[3:]
+                
+            if text.endswith("```"):
+                text = text[:-3]
+                
+            text = text.strip()
+    
+            obj = json.loads(text)
+        else:
+            obj = text
+
+        if isinstance(obj, list):
             return obj
+        elif isinstance(obj, dict) and "id" in obj:
+            return [obj]
+            
     except Exception:
-        # If any exception occurs during parsing (e.g., JSONDecodeError), return None
         return None
     return None
 
 
 
-def get_ollama_prediction_with_reason(narrative: str) -> tuple[int, str]:
+def get_llm_batch_predictions(batch: dict) -> dict:
     """
-    Gets the classification prediction and reasoning for a narrative using the Ollama model.
-    It first applies hardcoded exclusion rules before querying the LLM to save compute
-    and enforce strict medical guidelines.
+    Gets the classification prediction and reasoning for a batch of narratives using the LangChain model.
+    It first applies hardcoded exclusion rules locally (0 costs) before sending to the LLM.
+    """
+    results = {}
+    pending_batch = {}
     
-    Args:
-        narrative (str): The clinical narrative describing the ED visit.
+    # 1. Apply hard rules locally immediately (saves tokens and API costs!)
+    for rid, narrative in batch.items():
+        excluded = False
+        for pattern, reason_text in EXCLUSION_RULES:
+            if pattern.search(narrative):
+                results[rid] = (0, f"Hard Rule: {reason_text}")
+                excluded = True
+                break
+        if not excluded:
+            pending_batch[rid] = narrative
+
+    if not pending_batch:
+        return results
+
+    # 2. Build the prompt for the remaining narratives
+    prompt = build_prompt(pending_batch)
+
+    messages = [
+        SystemMessage(content=SYSTEM_MSG),
+        HumanMessage(content=prompt)
+    ]
+
+    try:
+        # 3. Query the LangChain model enforcing JSON format
+        resp = llm.invoke(messages)
+        parsed = parse_json_output(resp.content)
+    
+        # 4. Fallback retry
+        if parsed is None or not isinstance(parsed, list):
+            retry_prompt = prompt + '\n\nREMINDER: Output MUST be a valid JSON array of objects exactly like: [{"id": "...", "reason":"...", "label":0 or 1}]'
+            messages[-1] = HumanMessage(content=retry_prompt)
+            resp2 = llm.invoke(messages)
+            parsed = parse_json_output(resp2.content)
+    
+        # 5. Extract answers
+        if parsed is not None and isinstance(parsed, list):
+            for item in parsed:
+                if "id" in item and "label" in item and "reason" in item:
+                    results[str(item["id"])] = (int(item["label"]), str(item["reason"]))
+                    
+        # 6. Fallback final for missing predictions
+        for rid in pending_batch.keys():
+            if str(rid) not in results:
+                results[str(rid)] = (0, "Invalid model output or missing from batch; defaulted to 0.")
+    
+        return results
         
-    Returns:
-        tuple[int, str]: A tuple containing the binary label (0 or 1) and the reasoning string.
+    except Exception as e:
+        for rid in pending_batch.keys():
+            results[str(rid)] = (0, f"Error calling {LLM_PROVIDER}: {str(e)}")
+        return results
+
+
+
+
+def run_llm_classification(df: pd.DataFrame, n_samples: int | None = 200) -> pd.DataFrame:
     """
-    # 1. Apply hard rules: instantly reject narratives matching exclusion keywords
-    for pattern, reason_text in EXCLUSION_RULES:
-        if pattern.search(narrative):
-            return 0, f"Hard Rule: {reason_text}"
-
-    # 2. Build the few-shot prompt for the remaining narratives
-    prompt = build_prompt(narrative)
-
-    # 3. Query the Ollama model enforcing JSON format
-    resp = ollama.chat(
-        model=MODEL_NAME,
-        messages=[
-            {"role": "system", "content": SYSTEM_MSG},
-            {"role": "user", "content": prompt},
-        ],
-        format="json",  # Enforce JSON output mode
-        options={"temperature": 0}  # Use zero temperature for deterministic outputs
-    )
-
-    out = resp["message"]["content"]
-    parsed = parse_json_output(out)
-
-    # 4. Fallback retry: If parsing fails (e.g., missing keys), retry the query once
-    # with an explicit reminder of the required JSON structure.
-    if parsed is None:
-        retry_prompt = prompt + '\n\nREMINDER: Output MUST contain exact keys: {"reason":"...", "label":0 or 1}'
-        resp2 = ollama.chat(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": SYSTEM_MSG},
-                {"role": "user", "content": retry_prompt},
-            ],
-            format="json", # Enforce JSON mode on retry
-            options={"temperature": 0}
-        )
-        parsed = parse_json_output(resp2["message"]["content"])
-
-    # 5. Conservative final fallback: If it still fails, default to 0 (harmless)
-    if parsed is None:
-        return 0, "Invalid model output; defaulted to 0 (do not guess)."
-
-    return int(parsed["label"]), parsed["reason"]
-
-
-
-
-def run_ollama_classification(df: pd.DataFrame, n_samples: int | None = 200) -> pd.DataFrame:
-    """
-    Runs the Ollama-based few-shot classification pipeline.
+    Runs the LLM-based few-shot classification pipeline.
     If n_samples is provided, it runs on a balanced subset.
     If n_samples is None, it runs on the entire dataset.
     
@@ -218,7 +277,7 @@ def run_ollama_classification(df: pd.DataFrame, n_samples: int | None = 200) -> 
     Returns:
         pd.DataFrame: A new dataframe containing the LLM predictions and reasons.
     """
-    tqdm.pandas(desc="Classifying with Ollama")
+    tqdm.pandas(desc=f"Classifying with {LLM_PROVIDER}")
 
     if n_samples is not None:
         print(f"Running {MODEL_NAME} few-shot classification with reasons on {n_samples} balanced samples...")
@@ -233,17 +292,39 @@ def run_ollama_classification(df: pd.DataFrame, n_samples: int | None = 200) -> 
         print(f"Running {MODEL_NAME} few-shot classification with reasons on the FULL dataset ({len(df)} samples)...")
         df_sample = df.copy()
 
-    # Apply the classification function using progress_apply to display a progress bar
-    preds = df_sample["Narrative"].progress_apply(get_ollama_prediction_with_reason)
+    # Optimize concurrency and batch size
+    is_local = (LLM_PROVIDER == "ollama")
+    batch_size = 10 if is_local else 40
+    max_workers = 1 if is_local else 10
+    
+    print(f"\nProcessing in parallel using {max_workers} thread(s) with BATCH SIZE = {batch_size}...")
 
-    # Save the generated labels and reasons into the dataframe
-    df_sample["Ollama_Label"] = preds.apply(lambda x: x[0])
-    df_sample["Ollama_Reason"] = preds.apply(lambda x: x[1])
+    # Create batches explicitly using the DataFrame Index as ID
+    batches = []
+    current_batch = {}
+    for idx, row in df_sample.iterrows():
+        current_batch[str(idx)] = row["Narrative"]
+        if len(current_batch) == batch_size:
+            batches.append(current_batch)
+            current_batch = {}
+    if current_batch:
+        batches.append(current_batch)
+
+    final_results = {}
+
+    # ThreadPool mapping (preserves order naturally or through ID tracking)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for batch_res in tqdm(executor.map(get_llm_batch_predictions, batches), total=len(batches), desc=f"Classifying batched {LLM_PROVIDER}"):
+            final_results.update(batch_res)
+
+    # Save the generated labels and reasons into the dataframe mapped by exact ID
+    df_sample["LLM_Label"] = [final_results[str(idx)][0] for idx in df_sample.index]
+    df_sample["LLM_Reason"] = [final_results[str(idx)][1] for idx in df_sample.index]
 
     # Display a small preview of the results
     df_0_display = df_sample[df_sample["Ground_Truth"] == 0].head(5)
     df_1_display = df_sample[df_sample["Ground_Truth"] == 1].head(5)
-    df_display = pd.concat([df_0_display, df_1_display])[["Narrative", "Ground_Truth", "Ollama_Label", "Ollama_Reason"]]
+    df_display = pd.concat([df_0_display, df_1_display])[["Narrative", "Ground_Truth", "LLM_Label", "LLM_Reason"]]
     print(df_display)
     
     return df_sample
@@ -268,16 +349,24 @@ def save(df_sample: pd.DataFrame, out_excel: str | None = None) -> None:
     
     print(f"Saving LLM results for review: {out_excel}")
     # Export full detailed data to Excel for human evaluation
+    
+    # Prevent Excel formula errors by prefixing text starting with =, +, -, or @ with a single quote
+    df_excel = df_sample.copy()
+    for col in df_excel.select_dtypes(include=['object', 'string']):
+        df_excel[col] = df_excel[col].apply(
+            lambda x: f"'{x}" if isinstance(x, str) and str(x).startswith(('=', '+', '-', '@')) else x
+        )
+        
     with pd.ExcelWriter(out_excel, engine="openpyxl") as writer:
-        df_sample.to_excel(writer, sheet_name="sample_eval", index=False)
+        df_excel.to_excel(writer, sheet_name="sample_eval", index=False)
 
     # Export for BERT (Ensuring we use the LLM Teacher's labels)
     os.makedirs(data_dir, exist_ok=True)
     out_csv = os.path.join(data_dir, "bert_training_data.csv")
     
-    # CRITICAL: We take the LLM's intelligence (Ollama_Label) as the new reference (teacher labels)
-    df_bert = df_sample[["Narrative", "Ollama_Label"]].copy()
-    df_bert.rename(columns={"Ollama_Label": "label", "Narrative": "text"}, inplace=True)
+    # CRITICAL: We take the LLM's intelligence (LLM_Label) as the new reference (teacher labels)
+    df_bert = df_sample[["Narrative", "LLM_Label"]].copy()
+    df_bert.rename(columns={"LLM_Label": "label", "Narrative": "text"}, inplace=True)
     
     # Drop rows that experienced parsing failures to ensure data quality for fine-tuning
     df_bert = df_bert.dropna(subset=["label"])
@@ -299,8 +388,8 @@ def main():
     # 1. Data Loading: Gather raw ED visits
     df = load_and_preprocess_data(data_path)
     
-    # 2. LLM Inference: Generate pseudo-labels using Ollama
-    df_classified = run_ollama_classification(df, n_samples=None)
+    # 2. LLM Inference: Generate pseudo-labels using LangChain
+    df_classified = run_llm_classification(df, n_samples=1000)
     
     # 3. Save and Export: Prepare data for human analysis and BERT training
     save(df_classified)
