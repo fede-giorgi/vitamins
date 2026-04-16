@@ -12,8 +12,6 @@ Key Features:
 
 
 #%%
-%load_ext autoreload
-%autoreload 2
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -267,8 +265,11 @@ def save(df_sample: pd.DataFrame, out_excel: str | None = None) -> None:
         out_excel (str | None): Optional custom path for the output Excel file. 
                                 Defaults to a generic name in the data folder.
     """
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    data_dir = os.path.join(base_dir, "data")
+    
     if out_excel is None:
-        out_excel = f"../data/NEISS_Supplement_{len(df_sample)}_Samples.xlsx"
+        out_excel = os.path.join(data_dir, f"NEISS_Supplement_{len(df_sample)}_Samples.xlsx")
     
     print(f"Saving LLM results for review: {out_excel}")
     # Export full detailed data to Excel for human evaluation
@@ -276,8 +277,8 @@ def save(df_sample: pd.DataFrame, out_excel: str | None = None) -> None:
         df_sample.to_excel(writer, sheet_name="sample_eval", index=False)
 
     # Export for BERT (Ensuring we use the LLM Teacher's labels)
-    os.makedirs("../data", exist_ok=True)
-    out_csv = "../data/bert_training_data.csv"
+    os.makedirs(data_dir, exist_ok=True)
+    out_csv = os.path.join(data_dir, "bert_training_data.csv")
     
     # CRITICAL: We take the LLM's intelligence (Ollama_Label) as the new reference (teacher labels)
     df_bert = df_sample[["Narrative", "Ollama_Label"]].copy()
@@ -297,8 +298,11 @@ def main():
     """
     print("--- Starting NEISS Pipeline ---")
     
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    data_path = os.path.join(base_dir, 'data', 'PoisonedOnly_NEISS_2004-2023.xlsx')
+    
     # 1. Data Loading: Gather raw ED visits
-    df = load_and_preprocess_data('../data/PoisonedOnly_NEISS_2004-2023.xlsx')
+    df = load_and_preprocess_data(data_path)
     
     # 2. LLM Inference: Generate pseudo-labels using Ollama
     df_classified = run_ollama_classification(df, n_samples=None)
