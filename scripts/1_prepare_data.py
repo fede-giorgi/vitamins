@@ -43,59 +43,54 @@ OUTPUT FORMAT (must be valid JSON on a single line):
 TASK:
 Classify whether the narrative involves exposure/ingestion/overdose/adverse reaction to a STRICTLY HARMLESS VITAMIN.
 
-LABEL DEFINITIONS:
-- label=1 ONLY if the narrative explicitly involves a clear, traditional VITAMIN or fish oil AND it does NOT contain IRON.
-  Examples (label=1): multivitamin WITHOUT iron, vitamin D, vitamin C gummies, fish oil.
-- label=0 for EVERYTHING ELSE, including:
-  - SUPPLEMENTS THAT ARE NOT VITAMINS (e.g., melatonin, diet pills, fat loss pills, herbal supplements, creatine, protein).
-  - CANNABIS PRODUCTS (e.g., marijuana gummies, CBD, THC).
-  - ANY product/formulation that contains IRON (including "iron", "Fe", "ferrous", "ferric", "prenatal with iron", "multivitamin with iron").
-  - Prescription/OTC medications, INCLUDING MISSPELLINGS (e.g., "xanTax", "Tylenol", "cough med").
-  - AMBIGUOUS/REDACTED ingestions (e.g., "children's chewable ***", "*** diet supplement") where the specific vitamin is unknown.
-  - Household chemicals/toxins.
+LABEL 1 (POSITIVE) - INCLUSION RULES:
+- label=1 ONLY if the narrative explicitly involves a clear, traditional VITAMIN or fish oil.
+  Examples: "multivitamin", "childrens gummy multivitamins", "vitamin D", "vitamin C", "fish oil".
+- CO-INGESTIONS: If the patient ingested a safe vitamin AND a medication (e.g., "ingested beta blocker and multivitamin"), label it 1. The presence of a med does not cancel the vitamin.
+- MISSPELLINGS & TYPOS: ED narratives are badly written. You MUST tolerate and accept typos for vitamins (e.g., "mutivitiamins", "vitmin", "gummis").
+- PARTIAL REDACTIONS: If a clear vitamin is mentioned alongside a redacted word (e.g., "multivitamin and ***"), label it 1.
 
-EXCLUSION RULES (highest priority - MUST be 0):
-1. IRON: Any mention of iron formulations.
-2. NON-VITAMIN SUPPLEMENTS: Melatonin, diet pills, botanicals.
-3. CANNABIS: CBD, marijuana.
-4. REDACTED/AMBIGUOUS: "chewable ***", "ingested ***". If you don't know EXACTLY what it is, label=0.
-5. DRUGS/MEDS: Any drug, even misspelled.
+LABEL 0 (NEGATIVE) - EXCLUSION RULES (Highest Priority):
+- label=0 for EVERYTHING ELSE. You must strictly exclude:
+  1. IRON EXCEPTION: Any explicit mention of iron (e.g., "WITH IRON", "IRON", "Fe", "ferrous sulfate"). *Note: Standard "multivitamins" are assumed SAFE (label=1) UNLESS iron is explicitly stated.*
+  2. NON-VITAMIN SUPPLEMENTS: Melatonin, diet pills, fat loss pills, herbal supplements, botanicals, creatine, protein.
+  3. CANNABIS: CBD, THC, marijuana gummies, weed.
+  4. FULLY REDACTED/AMBIGUOUS: If the *entire* ingested substance is unknown (e.g., "ate chewable ***", "ingested *** pill"), label it 0.
+  5. PRESCRIPTION/OTC DRUGS: Any standard medication.
+  6. DRUG TYPOS: Be highly vigilant for badly written, misspelled, or abbreviated medications (e.g., "xanTax", "tylenol", "ibuprofin", "cough med"). If it's a misspelled drug (and NO vitamin is present), label=0.
+  7. HOUSEHOLD TOXINS: Chemicals, cleaning products, etc.
 
 GENERAL RULES:
-- Do not guess. If a clear, safe vitamin is not explicit, choose 0.
+- ACCEPT GENERIC TERMS (BENEFIT OF THE DOUBT): If the text mentions generic "vitamins", "gummy vitamins", "vitamin pills", or "childrens vitamins" without specifying the exact type, ASSUME THEY ARE SAFE (label=1) as long as NO exclusion keywords (iron, melatonin, drugs, etc.) are present. Do not punish the narrative for being vague.
 - Reason must cite the key phrase that triggered your decision.
 """.strip()
 
 # Few-shot examples WITH reasons (include hard negatives for new clinical rules)
 FEW_SHOTS = [
-    # Positives (pure vitamins WITHOUT iron)
-    ("2 YOM INGESTED MULTIVITAMIN (NO IRON) GUMMIES.", 1, "Mentions 'multivitamin (no iron) gummies' which is a pure vitamin without iron."),
-    ("CHILD TOOK SEVERAL VITAMIN D PILLS.", 1, "Explicit 'vitamin D' ingestion."),
-    ("POSSIBLE INGESTION OF FISH OIL PILLS", 1, "Explicit 'fish oil' which is accepted."),
+    # Positives (Standard vitamins, even with typos or redactions)
+    ("4YOM WITH ABD PAIN S/P EATING HANDFUL OF CHILDRENS GUMMY MULTIVITAMINS", 1, "Explicit mention of 'childrens gummy multivitamins'. This is a standard safe vitamin."),
+    ("PT INGESTED 10 MUTIVITIAMINS THEY WERE IN A PLASTIC BAG", 1, "Mentions 'mutivitiamins' (misspelled). Assumed safe unless iron is explicitly mentioned."),
+    ("3YOF INGESTION OF 20 MULTIVITAMIN GUMMIES, *** GUMMIES.", 1, "Clear mention of 'multivitamin gummies'. The presence of redacted '***' does not negate the vitamin ingestion."),
+    ("INGESTED BETA BLOCKER PILL, MULTI VITAMIN AND POTASSIUM PILL", 1, "Co-ingestion. A 'multi vitamin' is explicitly mentioned, even alongside medications."),
 
-    # Hard negatives (Must be 0 based on new clinical rules)
-    ("ADULT TOOK MELATONIN GUMMIES; DIZZY.", 0, "Mentions 'melatonin' which is a non-vitamin supplement, excluded."),
+    # Hard negatives (Must be 0 based on clinical rules)
+    ("ADULT TOOK MELATONIN GUMMIES; DIZZY.", 0, "Mentions 'melatonin', which is an excluded non-vitamin supplement."),
     ("3 YOF FOUND EATING CBD GUMMY.", 0, "Mentions 'CBD', cannabis products are excluded."),
     ("PATIENT INGESTED APPROX 20 FAT LOSS PILLS.", 0, "Mentions 'fat loss pills', diet supplements are excluded."),
-    ("3YF FD WITH OPEN BOTTLE OF CHILDREN'S CHEWABLE ***.", 0, "Mentions 'chewable ***', redacted/ambiguous substances are excluded."),
-    ("18MOF OPENED BOTTLES OF GENERIC XANTAX.", 0, "Mentions 'XANTAX' (misspelled drug), medications are excluded."),
+    ("3YF FD WITH OPEN BOTTLE OF CHILDREN'S CHEWABLE ***.", 0, "The specific substance is totally redacted ('***'). We cannot confirm it is a vitamin."),
 
-    # Iron exception hard negatives (MUST be 0)
-    ("2YOF ATE ADULT IRON + VIT C 18MG GUMMIES.", 0, "Mentions 'IRON + VIT C', iron-containing formulation is excluded."),
-    ("PRENATAL VITAMINS WITH IRON INGESTION.", 0, "Mentions 'with iron', iron-containing formulation is excluded.")
+    # Iron exceptions (Must be 0)
+    ("APPROX 20 VITAMINS MISSING FROM BOTTLEOF VITAMINS WITH IRON.", 0, "Explicitly mentions 'VITAMINS WITH IRON'."),
+    ("PRENATAL VITAMINS WITH IRON INGESTION.", 0, "Explicitly mentions 'WITH IRON'.")
 ]
 
 EXCLUSION_RULES = [
-    (re.compile(r"\b(iron|fe|ferrous|ferric|ferro)\b", re.IGNORECASE), 
-     "Mentions iron formulation."),
     (re.compile(r"\b(cbd|thc|marijuana|weed|cannabis|hemp)\b", re.IGNORECASE), 
      "Mentions cannabis product."),
     (re.compile(r"\b(melatonin)\b", re.IGNORECASE), 
      "Mentions melatonin (non-vitamin supplement)."),
     (re.compile(r"\b(diet pill|fat loss|weight loss)\b", re.IGNORECASE), 
-     "Mentions weight-loss/diet supplement."),
-    (re.compile(r"\*\*\*", re.IGNORECASE), 
-     "Contains redacted/ambiguous substance (***).")
+     "Mentions weight-loss/diet supplement.")
 ]
 
 
