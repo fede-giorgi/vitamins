@@ -11,8 +11,6 @@ Key Steps:
 3. Model Training: Fine-tunes a pre-trained BERT model using LoRA.
 4. Full Inference: Applies the trained model to the full dataset to generate final predictions.
 """
-%load_ext autoreload
-%autoreload 2
 
 import sys
 import os
@@ -222,10 +220,11 @@ def main():
     print("--- Starting BERT Training & Inference Pipeline ---")
     
     # Paths
-    TRAIN_CSV = '../data/bert_training_data.csv'
-    FULL_EXCEL = '../data/PoisonedOnly_NEISS_2004-2023.xlsx'
-    OUTPUT_CSV = '../data/NEISS_Final_Classified.csv'
-    OUTPUT_EXCEL = '../data/NEISS_Final_Classified.xlsx'
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    TRAIN_CSV = os.path.join(BASE_DIR, 'data', 'bert_training_data.csv')
+    FULL_EXCEL = os.path.join(BASE_DIR, 'data', 'PoisonedOnly_NEISS_2004-2023.xlsx')
+    OUTPUT_CSV = os.path.join(BASE_DIR, 'data', 'NEISS_Final_Classified.csv')
+    OUTPUT_EXCEL = os.path.join(BASE_DIR, 'data', 'NEISS_Final_Classified.xlsx')
     
     if torch.cuda.is_available():
         device = torch.device("cuda")
