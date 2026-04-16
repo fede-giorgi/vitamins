@@ -212,28 +212,33 @@ def get_ollama_prediction_with_reason(narrative: str) -> tuple[int, str]:
 
 
 
-def run_ollama_classification(df: pd.DataFrame, n_samples: int = 200) -> pd.DataFrame:
+def run_ollama_classification(df: pd.DataFrame, n_samples: int | None = 200) -> pd.DataFrame:
     """
-    Runs the Ollama-based few-shot classification pipeline on a balanced subset of the data.
+    Runs the Ollama-based few-shot classification pipeline.
+    If n_samples is provided, it runs on a balanced subset.
+    If n_samples is None, it runs on the entire dataset.
     
     Args:
         df (pd.DataFrame): The full dataframe containing the loaded clinical narratives.
-        n_samples (int): The total number of samples to classify, split evenly between active and inactive classes.
+        n_samples (int | None): The total number of samples to classify, or None for the full dataset.
         
     Returns:
-        pd.DataFrame: A new dataframe containing the sampled data with added LLM predictions and reasons.
+        pd.DataFrame: A new dataframe containing the LLM predictions and reasons.
     """
     tqdm.pandas(desc="Classifying with Ollama")
 
-    print(f"Running {MODEL_NAME} few-shot classification with reasons on {n_samples} samples...")
+    if n_samples is not None:
+        print(f"Running {MODEL_NAME} few-shot classification with reasons on {n_samples} balanced samples...")
+        # --- Balanced sample: 50% label 0 and 50% label 1 --- 
+        n_each = n_samples // 2
 
-    # --- Balanced sample: 50% label 0 and 50% label 1 --- 
-    n_each = n_samples // 2
-
-    # Extract the samples, forcing a balanced dataset
-    df_0 = df[df["Ground_Truth"] == 0].sample(n_each, random_state=42)
-    df_1 = df[df["Ground_Truth"] == 1].sample(n_each, random_state=42)
-    df_sample = pd.concat([df_0, df_1]).sample(frac=1, random_state=42).reset_index(drop=True)
+        # Extract the samples, forcing a balanced dataset
+        df_0 = df[df["Ground_Truth"] == 0].sample(n_each, random_state=42)
+        df_1 = df[df["Ground_Truth"] == 1].sample(n_each, random_state=42)
+        df_sample = pd.concat([df_0, df_1]).sample(frac=1, random_state=42).reset_index(drop=True)
+    else:
+        print(f"Running {MODEL_NAME} few-shot classification with reasons on the FULL dataset ({len(df)} samples)...")
+        df_sample = df.copy()
 
     # Apply the classification function using progress_apply to display a progress bar
     preds = df_sample["Narrative"].progress_apply(get_ollama_prediction_with_reason)
@@ -296,7 +301,7 @@ def main():
     df = load_and_preprocess_data('../data/PoisonedOnly_NEISS_2004-2023.xlsx')
     
     # 2. LLM Inference: Generate pseudo-labels using Ollama
-    df_classified = run_ollama_classification(df, n_samples=5000)
+    df_classified = run_ollama_classification(df, n_samples=None)
     
     # 3. Save and Export: Prepare data for human analysis and BERT training
     save(df_classified)
