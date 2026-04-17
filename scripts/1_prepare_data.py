@@ -396,7 +396,7 @@ def main():
     df = load_and_preprocess_data(data_path)
     
     # 2. LLM Inference: Generate pseudo-labels using LangChain
-    df_classified = run_llm_classification(df, n_samples=1000)
+    df_classified = run_llm_classification(df, n_samples=1500)
     
     # 3. Save and Export: Prepare data for human analysis and BERT training
     save(df_classified)
