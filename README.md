@@ -1,93 +1,75 @@
-# NEISS Vitamin & Supplement ED Visit Analysis
+# NEISS Vitamin ED Visit Analysis
 
 ## Project Overview
-Vitamins, herbs, and dietary supplements are widely marketed as harmless and possibly helpful. This project investigates the **National Electronic Injury Surveillance System (NEISS)** database over the past 21 years to determine national temporal trends in emergency department (ED) visits related to poisoning or adverse reactions associated with these substances (e.g., ashwagandha, turmeric, vitamin B12, melatonin). 
+Vitamin and dietary supplement exposures are a common reason for toxicology-related emergency department (ED) encounters, particularly among children with unintentional ingestions. While the **National Electronic Injury Surveillance System (NEISS)** enables the assessment of long-term trends, accurate identification of relevant cases can be limited by variable coding and the need to interpret short, free-text case narratives.
 
-### The Data (NEISS)
-The National Electronic Injury Surveillance System (NEISS) is a U.S. system managed by the Consumer Product Safety Commission (CPSC). It collects data on consumer product-related injuries treated in hospital emergency departments. 
+This project investigates 20 years of NEISS data (2004–2023) to estimate the annual incidence of ED-treated vitamin exposures. By applying a Large Language Model (LLM) to process the entire dataset of over 91,000 case narratives, this study demonstrates a scalable methodology to improve case ascertainment in large surveillance databases where comprehensive manual review is impossible.
 
-**National Estimates & Statistical Weighting:**
-By utilizing a probability sample of approximately 100 U.S. hospitals, the NEISS allows researchers to extrapolate and create highly accurate national estimates. Each case in the dataset is assigned a **statistical weight**; the sum of these weights represents the total estimated number of ED visits nationwide. This project leverages these weights to ensure all temporal and demographic trends reflect the entire U.S. population.
+### The Data & National Estimates
+The NEISS is a national ED surveillance database managed by the Consumer Product Safety Commission (CPSC). By utilizing a probability sample of approximately 100 U.S. hospitals, the NEISS allows researchers to extrapolate and create highly accurate national estimates. Each case in the dataset is assigned a **statistical weight**; the sum of these weights represents the total estimated number of ED visits nationwide. This project leverages these weights to ensure all temporal trends reflect the entire U.S. population.
 
-### Project Goals
-* **Automated Classification:** Scalable processing of >90,000 medical narratives.
-* **Epidemiological Modeling:** Identifying statistically significant shifts in exposure patterns.
-* **Public Health Impact:** Distinguishing between safe vitamin use and high-risk supplement exposures (e.g., iron toxicity or non-vitamin botanicals).
 
----
 
-## System Architecture
+## Methodology
 
-The repository utilizes a **Teacher-Student Machine Learning Pipeline** to achieve high-precision classification at scale, followed by a rigorous statistical evaluation.
+### 1. Hybrid Cloud-Edge LLM Classification
+Because full manual review is impractical at the NEISS scale, we applied a dual-LLM pipeline to review and classify the coder-written case narratives:
+* **Primary Classifier:** `Gemini 2.5 Flash Lite` processed the vast majority of the dataset via API for high throughput.
+* **Local Fallback:** `Gemma 4: 9B` (via Ollama) served as a secure, local fallback to process any narratives blocked by commercial API safety filters (e.g., narratives containing graphic descriptions of unrelated injuries).
 
-```mermaid
-graph LR
-    %% Define Node Styles
-    classDef block fill:#ffffff,stroke:#004479,stroke-width:2px,color:#000000,font-weight:bold;
-    classDef model fill:#e6e8ea,stroke:#6e757c,stroke-width:2px,color:#000000,font-weight:bold;
-    classDef agent fill:#fff3e6,stroke:#ffa500,stroke-width:2px,stroke-dasharray: 5 5,color:#000000,font-weight:bold;
-    classDef user fill:#f4f5f6,stroke:#6e757c,stroke-width:1px;
+The LLM prompt was developed using an **iterative design process**: the database was sampled in batches of 200, 500, and 1,500 cases, which were analyzed by the LLM and manually reviewed by a medical toxicologist. The final classification logic was instructed to **include strictly harmless vitamins** and explicitly **exclude non-vitamin dietary supplements, iron-containing products, medications, and household chemicals**.
 
-    %% Nodes
-    Data[(Raw NEISS Data<br>91k+ Narratives)]:::block
-    Agent{Ollama Agent<br>gemma4:e4b Labeling}:::agent
-    
-    Preproc[Few-Shot Bootstrapping<br>& Hybrid Sampling]:::block
-    
-    subgraph Machine Learning Pipeline
-        BERT[BERT-base-uncased]:::model
-        LoRA[LoRA Fine-Tuning]:::model
-        Inf[Mass Batch Inference]:::model
-    end
-    
-    Stats[OLS Multivariate<br>Regression]:::block
-    Viz[National Trend<br>Visualizations]:::block
+### 2. Temporal & Statistical Analysis
+Temporal trends across the 2004–2023 period were assessed using **Ordinary Least Squares (OLS) linear regression** models. The analysis also incorporates multivariate interaction terms to detect if specific demographics (e.g., pediatric age groups vs. adults) or clinical severities (Admitted vs. Treated/Released) diverged from the national baseline over the 20-year study period.
 
-    %% Data Flow
-    Data ==> Preproc
-    Preproc ==> Agent
-    Agent -.->|Ground Truth Generation| BERT
-    BERT ==> LoRA
-    LoRA ==> Inf
-    Inf ==> Stats
-    Stats ==> Viz
+
+
+## Repository Structure
+
+The repository follows a standard Data Science layout to separate raw data, reusable logic, execution scripts, and final analyses.
+
+```text
+vitamins/
+├── data/
+│   ├── raw/                 # The original NEISS Excel dataset
+│   ├── processed/           # The final LLM-classified dataset (91k rows)
+│   └── archive/             # Iterative design samples (200, 500, 1500 rows)
+├── src/                     # Reusable Python modules
+│   ├── __init__.py
+│   ├── load_data.py         # Data cleaning and preprocessing functions
+│   └── classification.py    # LLM business logic (Prompts, JSON parsers, Regex rules)
+├── scripts/                 # Entry points for execution
+│   └── run_classification.py# Main script to trigger the hybrid LLM pipeline
+├── notebooks/               # Final statistical analyses and visualizations
+│   └── temporal_analysis.ipynb
+├── README.md
+├── requirements.txt
+└── .env.example
 ```
 
 ---
 
-## Repository Architecture & Workflow
+## Setup & Execution
 
-### 1. Zero-Shot / Few-Shot Data Labeling (The Teacher)
-* **Script:** `scripts/1_prepare_data.py`
-* **Model:** `gemma4:e4b` (via Ollama)
-* **Function:** Instead of manually labeling thousands of medical narratives, we use a local Large Language Model as a "Silver Standard" labeler. Utilizing a strict Chain-of-Thought (CoT) prompt and JSON structured output, the model evaluates a sample of narratives to identify true supplement exposures.
-* **Filtering:** The model is instructed to rigorously filter out exceptions such as iron toxicity, pharmaceuticals, and household chemicals, creating a high-quality "Ground Truth" training dataset.
-
-### 2. Fine-Tuning & Mass Inference (The Student)
-* **Script:** `scripts/2_train_bert.py`
-* **Model:** `bert-base-uncased` + LoRA
-* **Function:** A BERT sequence classifier is fine-tuned on the LLM-generated dataset using **Low-Rank Adaptation (LoRA)**. 
-* **Scalability:** Once the student model (BERT) reaches convergence, it performs high-speed inference across the entire 21-year database. This approach achieves a **200x speedup** compared to processing the whole dataset via LLM while maintaining deep semantic understanding.
-
-### 3. Statistical & Temporal Analysis
-* **Notebook:** `temporal_analysis.ipynb`
-* **Modeling:** Ordinary Least Squares (OLS) Linear Regression with **Heteroscedasticity and Autocorrelation Consistent (HAC)** standard errors.
-* **Interaction Terms:** We model the interaction between `Year` and `Category` to detect if specific demographics (e.g., pediatric age groups) are diverging from the national baseline.
-* **Seasonality:** Analysis of normalized monthly shares to identify cyclic patterns in vitamin-related hospitalizations.
-
----
-
-## Setup & Requirements
-
-1. **Ollama:** Ensure [Ollama](https://ollama.com/) is installed and the model is available:
-   ```bash
-   ollama pull gemma4:e4b
+### Prerequisites
+1. **API Keys:** Create a `.env` file in the root directory and add your Google API key:
+   ```env
+   GOOGLE_API_KEY="your_api_key_here"
    ```
-2. **Python Environment:**
+2. **Ollama (Required for Fallback):** Install [Ollama](https://ollama.com/) locally to run the unfiltered fallback model. Open your terminal and run:
+   ```bash
+   ollama run gemma4:e4b
+   ```
+3. **Python Environment:** Install the required dependencies:
    ```bash
    pip install -r requirements.txt
    ```
-3. **Execution:**
-   * Run `scripts/1_prepare_data.py` to generate the training set.
-   * Run `scripts/2_train_bert.py` to train the classifier and process the full database.
-   * Use `temporal_analysis.ipynb` for final reporting.
+
+### Running the Pipeline
+1. **Classify the Data:**
+   Run the main classification script. This will iterate through the raw NEISS data, apply the Gemini/Gemma pipeline, and save the output to `data/processed/`.
+   ```bash
+   python scripts/run_classification.py
+   ```
+2. **Analyze the Trends:**
+   Open `notebooks/temporal_analysis.ipynb` via Jupyter or VS Code to run the OLS regressions, view the interaction terms, and generate the final epidemiological plots.
