@@ -71,5 +71,22 @@ vitamins/
    ```bash
    python scripts/run_classification.py
    ```
-2. **Analyze the Trends:**
-   Open `notebooks/temporal_analysis.ipynb` via Jupyter or VS Code to run the OLS regressions, view the interaction terms, and generate the final epidemiological plots.
+2. **Temporal Analysis, XAI & Key Findings**
+   To extract clinical insights from the LLM-classified dataset, we conducted a multi-faceted analysis within `notebooks/temporal_analysis.ipynb`. 
+
+   The approach combined rigorous statistical modeling with qualitative narrative extraction:
+
+   * **Epidemiological Trends:** Temporal trends across the 2004–2023 period were assessed using Ordinary Least Squares (OLS), Poisson, and Negative Binomial regression models. All models consistently confirmed a statistically significant downward trend in ED-treated vitamin exposures over the 20-year period.
+   * **Stratified Demographics:** Multivariate interaction models (`Year * Category`) were applied to detect divergence from the national baseline. A significant shift in age dynamics was observed; while infant exposures declined, ED visits for children aged 4+ increased at a significantly steeper rate.
+   * **Clinical Severity:** We tracked the ratio of hospital admissions to total visits over time. Admission rates remained consistently low (<5%) and declined, confirming that these exposures are predominantly low-acuity.
+   * **Explainable AI (XAI):** A discriminative scoring system validated the LLM's clinical accuracy by extracting word frequencies, confirming it highly indexed on safe terms (e.g., "Multivitamins", "Biotin") while appropriately excluding dangerous co-ingestions (e.g., "Prenatal", "Iron").
+   * **Topic Modeling:** Latent Dirichlet Allocation (LDA) was applied to the unstructured narratives to extract underlying themes. Vitamin-related ED visits represent a clinically homogeneous pattern heavily driven by unintentional pediatric ingestions from unsecured household bottles, rather than distinct, separable sub-epidemics.
+
+---
+
+## Authors & Affiliations
+* **Federico Giorgi** - *Data Science Institute, Columbia University*
+* **Anisha Gupta** - *Data Science Institute, Columbia University*
+* **Adam Blumenberg, MD, MA, FACEP, FAACT, FNYAM** - *Columbia University Medical Center*
+
+**Note:** This repository contains the code and methodology supporting the abstract submission for the 2026 North American Congress of Clinical Toxicology (NACCT).
