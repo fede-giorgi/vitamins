@@ -2,9 +2,11 @@ pandas
 numpy
 matplotlib
 scikit-learn
-ollama
+statsmodels
 tqdm
 openpyxl
-torch
-torchmetrics
-transformers
+python-dotenv
+langchain-google-genai
+langchain-ollama
+langchain-openai
+langchain-core

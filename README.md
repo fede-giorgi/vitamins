@@ -1,5 +1,16 @@
 # NEISS Vitamin ED Visit Analysis
 
+> ### 📢 Update: Conference Presentation & Publication
+> This work was accepted, presented as a poster, and published in the proceedings of the **North American Congress of Clinical Toxicology (NACCT) 2026** in the journal ***Clinical Toxicology***.
+> 
+> * **Presentation:** Poster #109, North American Congress of Clinical Toxicology (NACCT 2026)
+> * **Journal:** *Clinical Toxicology*, Volume 64, Issue sup2, Pages 1–181 | Published online: 13 Oct 2026
+> * **Cite this article:** [https://doi.org/10.1080/15563650.2026.2719154](https://doi.org/10.1080/15563650.2026.2719154)
+> 
+> <p align="center">
+>   <img src="assets/nacct_2026_poster.jpg" alt="NACCT 2026 Conference Poster" width="750"/>
+> </p>
+
 ## Project Overview
 Vitamin and dietary supplement exposures are a common reason for toxicology-related emergency department (ED) encounters, particularly among children with unintentional ingestions. While the **National Electronic Injury Surveillance System (NEISS)** enables the assessment of long-term trends, accurate identification of relevant cases can be limited by variable coding and the need to interpret short, free-text case narratives.
 
@@ -30,6 +41,8 @@ The repository follows a standard Data Science layout to separate raw data, reus
 
 ```text
 vitamins/
+├── assets/
+│   └── nacct_2026_poster.jpg# NACCT 2026 conference poster
 ├── data/
 │   ├── raw/                 # The original NEISS Excel dataset
 │   ├── processed/           # The final LLM-classified dataset (91k rows)
@@ -40,8 +53,7 @@ vitamins/
 │   └── classification.py    # LLM business logic (Prompts, JSON parsers, Regex rules)
 ├── scripts/                 # Entry points for execution
 │   └── run_classification.py# Main script to trigger the hybrid LLM pipeline
-├── notebooks/               # Final statistical analyses and visualizations
-│   └── temporal_analysis.ipynb
+├── temporal_analysis.ipynb  # Final statistical analyses and visualizations
 ├── README.md
 ├── requirements.txt
 └── .env.example
@@ -72,7 +84,7 @@ vitamins/
    python scripts/run_classification.py
    ```
 2. **Temporal Analysis, XAI & Key Findings**
-   To extract clinical insights from the LLM-classified dataset, we conducted a multi-faceted analysis within `notebooks/temporal_analysis.ipynb`. 
+   To extract clinical insights from the LLM-classified dataset, we conducted a multi-faceted analysis within `temporal_analysis.ipynb`. 
 
    The approach combined rigorous statistical modeling with qualitative narrative extraction:
 
@@ -89,4 +101,4 @@ vitamins/
 * **Anisha Gupta** - *Data Science Institute, Columbia University*
 * **Adam Blumenberg, MD, MA, FACEP, FAACT, FNYAM** - *Columbia University Medical Center*
 
-**Note:** This repository contains the code and methodology supporting the abstract submission for the 2026 North American Congress of Clinical Toxicology (NACCT).
+**Note:** This repository contains the code and methodology supporting the abstract presented at the 2026 North American Congress of Clinical Toxicology (NACCT) and published in *Clinical Toxicology* ([DOI: 10.1080/15563650.2026.2719154](https://doi.org/10.1080/15563650.2026.2719154)).
